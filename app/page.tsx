@@ -1,13 +1,26 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import Header from "@/components/header"
 import IntersectionGrid from "@/components/intersection-grid"
 import MapAndAlerts from "@/components/map-and-alerts"
 import ControlBar from "@/components/control-bar"
+import { isAuthenticated } from "@/lib/auth"
 
 export default function Dashboard() {
+  const router = useRouter()
   const [darkMode, setDarkMode] = useState(true)
+  const [isReady, setIsReady] = useState(false)
+
+  useEffect(() => {
+    if (!isAuthenticated()) {
+      router.replace("/login")
+      return
+    }
+
+    setIsReady(true)
+  }, [router])
 
   useEffect(() => {
     if (darkMode) {
@@ -16,6 +29,10 @@ export default function Dashboard() {
       document.documentElement.classList.remove("dark")
     }
   }, [darkMode])
+
+  if (!isReady) {
+    return null
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -35,7 +52,7 @@ export default function Dashboard() {
         </div>
       </main>
 
-      <ControlBar />
+      {/* <ControlBar /> */}
     </div>
   )
 }

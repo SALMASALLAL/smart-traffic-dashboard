@@ -1,5 +1,9 @@
+"use client"
+
+import { useRouter } from "next/navigation"
 import { Bell, User, TrafficCone as Traffic } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { clearAuthToken } from "@/lib/auth"
 
 interface HeaderProps {
   onThemeToggle: () => void
@@ -7,6 +11,13 @@ interface HeaderProps {
 }
 
 export default function Header({ onThemeToggle, darkMode }: HeaderProps) {
+  const router = useRouter()
+
+  const handleLogout = () => {
+    clearAuthToken()
+    router.push("/login")
+  }
+
   return (
     <header className="border-b border-white/10 glass-effect sticky top-0 z-50">
       <div className="px-6 py-4 flex items-center justify-between">
@@ -27,6 +38,9 @@ export default function Header({ onThemeToggle, darkMode }: HeaderProps) {
           </Button>
           <Button variant="ghost" size="icon" className="hover:bg-white/5">
             <User className="w-5 h-5" />
+          </Button>
+          <Button onClick={handleLogout} className="bg-accent hover:bg-accent/90">
+            Logout
           </Button>
         </div>
       </div>

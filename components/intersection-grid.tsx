@@ -2,12 +2,90 @@
 
 import { useState, useEffect } from "react"
 import IntersectionCard from "@/components/intersection-card"
+import { getAccessToken, getTokenType } from "@/lib/auth"
+
+type Intersection = {
+  id: number
+  name: string
+  trafficColor: "red" | "yellow" | "green"
+  congestion: number
+  cars: number
+  status: "Normal" | "Moderate" | "Heavy" | "Critical"
+  lastUpdate: string
+  lanes: { north: number; south: number; east: number; west: number }
+}
+
+type DetectionRecord = {
+  id: number
+  camera_id: number
+  vehicle_count: number
+  congestion_level: number
+  timestamp: string
+}
+
+const API_URL = "https://judgingly-cicatrisant-milly.ngrok-free.dev/traffic/cognition-records?limit=20"
+
+function getCongestionFromLevel(level: number) {
+  const normalized = Math.max(1, Math.min(4, level))
+  const map: Record<number, number> = {
+    1: 25,
+    2: 50,
+    3: 75,
+    4: 95,
+  }
+
+  return map[normalized]
+}
+
+function getTrafficColor(congestion: number): "red" | "yellow" | "green" {
+  if (congestion > 80) return "red"
+  if (congestion > 55) return "yellow"
+  return "green"
+}
+
+function getStatus(congestion: number): "Normal" | "Moderate" | "Heavy" | "Critical" {
+  if (congestion > 80) return "Critical"
+  if (congestion > 60) return "Heavy"
+  if (congestion > 40) return "Moderate"
+  return "Normal"
+}
+
+function getLaneSplit(cars: number) {
+  const safeCars = Math.max(0, cars)
+  const north = Math.max(1, Math.round(safeCars * 0.3))
+  const south = Math.max(1, Math.round(safeCars * 0.25))
+  const east = Math.max(1, Math.round(safeCars * 0.3))
+  const west = Math.max(1, safeCars - north - south - east)
+
+  return { north, south, east, west }
+}
+
+function getRelativeTime(timestamp: string) {
+  const date = new Date(timestamp)
+  const diffMs = Date.now() - date.getTime()
+
+  if (Number.isNaN(diffMs) || diffMs < 0) {
+    return "now"
+  }
+
+  const seconds = Math.floor(diffMs / 1000)
+  if (seconds < 60) return "now"
+
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} min ago`
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
 
 export default function IntersectionGrid() {
-  const [intersections, setIntersections] = useState([
+  const [intersections, setIntersections] = useState<Intersection[]>([
     {
       id: 1,
-      name: "Intersection A",
+      name: "North-South",
       trafficColor: "green" as const,
       congestion: 25,
       cars: 12,
@@ -17,7 +95,7 @@ export default function IntersectionGrid() {
     },
     {
       id: 2,
-      name: "Intersection B",
+      name: "East-West",
       trafficColor: "red" as const,
       congestion: 85,
       cars: 48,
@@ -25,50 +103,87 @@ export default function IntersectionGrid() {
       lastUpdate: "1 min ago",
       lanes: { north: 35, south: 28, east: 42, west: 31 },
     },
-    {
-      id: 3,
-      name: "Intersection C",
-      trafficColor: "yellow" as const,
-      congestion: 55,
-      cars: 32,
-      status: "Heavy" as const,
-      lastUpdate: "3 min ago",
-      lanes: { north: 18, south: 22, east: 25, west: 15 },
-    },
-    {
-      id: 4,
-      name: "Intersection D",
-      trafficColor: "green" as const,
-      congestion: 35,
-      cars: 18,
-      status: "Moderate" as const,
-      lastUpdate: "2 min ago",
-      lanes: { north: 10, south: 8, east: 15, west: 12 },
-    },
   ])
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setIntersections((prev) =>
-        prev.map((intersection) => ({
-          ...intersection,
-          congestion: Math.max(0, Math.min(100, intersection.congestion + (Math.random() - 0.5) * 10)),
-          cars: Math.max(5, Math.min(50, intersection.cars + Math.floor((Math.random() - 0.5) * 6))),
-          lastUpdate: "now",
-          trafficColor: intersection.congestion > 80 ? "red" : intersection.congestion > 55 ? "yellow" : "green",
-          status:
-            intersection.congestion > 80
-              ? "Critical"
-              : intersection.congestion > 60
-                ? "Heavy"
-                : intersection.congestion > 40
-                  ? "Moderate"
-                  : "Normal",
-        })),
-      )
-    }, 3000)
+    let isMounted = true
 
-    return () => clearInterval(interval)
+    const fetchDetectionRecords = async () => {
+      try {
+        const accessToken = getAccessToken()
+        const tokenType = getTokenType() ?? "bearer"
+        const headers: HeadersInit = {
+          Accept: "application/json",
+        }
+
+        if (accessToken) {
+          headers.Authorization = `${tokenType} ${accessToken}`
+        }
+
+        const response = await fetch(API_URL, {
+          method: "GET",
+          headers,
+          cache: "no-store",
+        })
+
+        if (!response.ok) {
+          return
+        }
+
+        const records: DetectionRecord[] = await response.json()
+        if (!Array.isArray(records) || records.length === 0) {
+          return
+        }
+
+        const latestByCamera = new Map<number, DetectionRecord>()
+        for (const record of records) {
+          if (!latestByCamera.has(record.camera_id)) {
+            latestByCamera.set(record.camera_id, record)
+          }
+        }
+
+        const latestTwo = [...latestByCamera.values()].slice(0, 2)
+        if (latestTwo.length === 0 || !isMounted) {
+          return
+        }
+
+        const nextIntersections: Intersection[] = latestTwo.map((record, index) => {
+          const congestion = getCongestionFromLevel(record.congestion_level)
+          const cars = Math.max(0, record.vehicle_count)
+
+          return {
+            id: index + 1,
+            name: `Intersection ${index === 0 ? "A" : "B"}`,
+            trafficColor: getTrafficColor(congestion),
+            congestion,
+            cars,
+            status: getStatus(congestion),
+            lastUpdate: getRelativeTime(record.timestamp),
+            lanes: getLaneSplit(cars),
+          }
+        })
+
+        if (nextIntersections.length === 1) {
+          nextIntersections.push({
+            ...nextIntersections[0],
+            id: 2,
+            name: "Intersection B",
+          })
+        }
+
+        setIntersections(nextIntersections)
+      } catch {
+        // Keep the previous UI state if the API is temporarily unavailable.
+      }
+    }
+
+    fetchDetectionRecords()
+    const interval = setInterval(fetchDetectionRecords, 5000)
+
+    return () => {
+      isMounted = false
+      clearInterval(interval)
+    }
   }, [])
 
   return (
