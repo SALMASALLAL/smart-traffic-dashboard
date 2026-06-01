@@ -134,6 +134,7 @@ export default function IntersectionCard({
           <p className="text-3xl font-bold text-accent">{Math.max(5, 45 - congestion / 2).toFixed(0)}km/h</p>
         </div> */}
       </div>
+      
 
       <div className="rounded-lg p-4 border border-white/10" style={{ background: "rgba(255,255,255,0.05)" }}>
         <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wider">Signal Status</p>

@@ -205,33 +205,54 @@ function buildIntersections(liveState: LiveTrafficState, nowMs: number): Interse
     west: "red",
   }
 
-  return liveState.detections.slice(0, 1).map((record) => {
-    const congestion = getCongestionFromLevel(record.congestion_level)
-    const baseCars = Math.max(0, record.vehicle_count)
-    const timing = liveState.northSouth
-    const cars = getDynamicCarsFromSignal(baseCars, timing, nowMs)
+  // Build two intersections per latest detection: North-South and East-West
+  const latest = liveState.detections.slice(0, 1)
+  if (latest.length === 0) return []
 
-    const baseVehicleCounts = {
-      bus: Math.max(0, record.vehicle_types?.bus ?? Math.round(baseCars * 0.1)),
-      motorcycle: Math.max(0, record.vehicle_types?.motorcycle ?? Math.round(baseCars * 0.35)),
-      truck: Math.max(0, record.vehicle_types?.truck ?? Math.round(baseCars * 0.12)),
-      fireTruck: Math.max(0, record.vehicle_types?.fire_truck ?? Math.round(baseCars * 0.01)),
-      ambulance: Math.max(0, record.vehicle_types?.ambulance ?? Math.round(baseCars * 0.02)),
-    }
-    const vehicleCounts = getDynamicVehicleCounts(baseVehicleCounts, timing, nowMs)
+  const record = latest[0]
+  const congestion = getCongestionFromLevel(record.congestion_level)
+  const baseCars = Math.max(0, record.vehicle_count)
+  const timing = liveState.northSouth
+  const cars = getDynamicCarsFromSignal(baseCars, timing, nowMs)
 
-    return {
-      id: 1,
-      name: "North-South",
-      trafficColor: getTrafficColor(congestion),
-      congestion,
-      cars,
-      vehicleCounts,
-      status: getStatus(congestion),
-      lastUpdate: getRelativeTime(record.timestamp),
-      lanes: signalLanes,
-    }
-  })
+  const baseVehicleCounts = {
+    bus: Math.max(0, record.vehicle_types?.bus ?? Math.round(baseCars * 0.1)),
+    motorcycle: Math.max(0, record.vehicle_types?.motorcycle ?? Math.round(baseCars * 0.35)),
+    truck: Math.max(0, record.vehicle_types?.truck ?? Math.round(baseCars * 0.12)),
+    fireTruck: Math.max(0, record.vehicle_types?.fire_truck ?? Math.round(baseCars * 0.01)),
+    ambulance: Math.max(0, record.vehicle_types?.ambulance ?? Math.round(baseCars * 0.02)),
+  }
+  const vehicleCounts = getDynamicVehicleCounts(baseVehicleCounts, timing, nowMs)
+
+  const nsIntersection: Intersection = {
+    id: 1,
+    name: "North-South",
+    trafficColor: getTrafficColor(congestion),
+    congestion,
+    cars,
+    vehicleCounts,
+    status: getStatus(congestion),
+    lastUpdate: getRelativeTime(record.timestamp),
+    lanes: signalLanes,
+  }
+
+  // For the East-West intersection we invert the signal (EW active when NS is red)
+  const ewSignal: "red" | "yellow" | "green" = northSouthSignal === "red" ? "green" : "red"
+  const ewLanes: Intersection["lanes"] = { north: ewSignal, south: ewSignal, east: ewSignal, west: ewSignal }
+
+  const ewIntersection: Intersection = {
+    id: 2,
+    name: "East-West",
+    trafficColor: getTrafficColor(congestion),
+    congestion,
+    cars: Math.max(0, Math.round(cars * 0.9)),
+    vehicleCounts,
+    status: getStatus(congestion),
+    lastUpdate: getRelativeTime(record.timestamp),
+    lanes: ewLanes,
+  }
+
+  return [nsIntersection, ewIntersection]
 }
 
 export default function IntersectionGrid() {
@@ -248,6 +269,17 @@ export default function IntersectionGrid() {
       status: "Normal" as const,
       lastUpdate: "2 min ago",
       lanes: { north: "green", south: "green", east: "red", west: "red" },
+    },
+    {
+      id: 2,
+      name: "East-West",
+      trafficColor: "red" as const,
+      congestion: 30,
+      cars: 8,
+      vehicleCounts: { bus: 1, motorcycle: 2, truck: 1, fireTruck: 0, ambulance: 0 },
+      status: "Moderate" as const,
+      lastUpdate: "2 min ago",
+      lanes: { north: "red", south: "red", east: "green", west: "green" },
     },
   ])
 
@@ -367,7 +399,7 @@ export default function IntersectionGrid() {
   }, [])
 
   return (
-    <div className="grid grid-cols-1 gap-4 w-full">
+    <div className="grid grid-cols-2 gap-4 w-full">
       {intersections.map((intersection) => (
         <IntersectionCard
           key={intersection.id}
