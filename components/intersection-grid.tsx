@@ -20,6 +20,7 @@ type Intersection = {
   status: "Normal" | "Moderate" | "Heavy" | "Critical"
   lastUpdate: string
   lanes: { north: "red" | "yellow" | "green"; south: "red" | "yellow" | "green"; east: "red" | "yellow" | "green"; west: "red" | "yellow" | "green" }
+  signalTiming?: SignalTimingRecord
 }
 
 type DetectionRecord = {
@@ -42,13 +43,13 @@ type SignalTimingRecord = {
   green_time: number
   red_time: number
   yellow_time: number
-  direction: "north_south" | "east_west"
+  direction: string
   timestamp: string
 }
 
 type LiveTrafficState = {
   detections: DetectionRecord[]
-  northSouth?: SignalTimingRecord
+  signalTimings: Record<string, SignalTimingRecord | undefined>
 }
 
 const API_URL = "/api/traffic/cognition-records?limit=20"
@@ -196,14 +197,19 @@ function getTimestampMs(timestamp: string) {
   return Number.isNaN(value) ? 0 : value
 }
 
+function normalizeDirection(direction: string) {
+  return direction.trim().toLowerCase().replace(/[_\s]+/g, "-")
+}
+
+function getSignalTimingForDirection(liveState: LiveTrafficState, direction: string) {
+  return liveState.signalTimings[normalizeDirection(direction)]
+}
+
 function buildIntersections(liveState: LiveTrafficState, nowMs: number): Intersection[] {
-  const northSouthSignal = liveState.northSouth ? getSignalColorFromTiming(liveState.northSouth, nowMs) : "green"
-  const signalLanes: Intersection["lanes"] = {
-    north: northSouthSignal,
-    south: northSouthSignal,
-    east: "red",
-    west: "red",
-  }
+  const northSouthTiming = getSignalTimingForDirection(liveState, "North-South")
+  const eastWestTiming = getSignalTimingForDirection(liveState, "East-West")
+  const northSouthSignal = northSouthTiming ? getSignalColorFromTiming(northSouthTiming, nowMs) : "green"
+  const eastWestSignal = eastWestTiming ? getSignalColorFromTiming(eastWestTiming, nowMs) : "red"
 
   // Build two intersections per latest detection: North-South and East-West
   const latest = liveState.detections.slice(0, 1)
@@ -212,8 +218,8 @@ function buildIntersections(liveState: LiveTrafficState, nowMs: number): Interse
   const record = latest[0]
   const congestion = getCongestionFromLevel(record.congestion_level)
   const baseCars = Math.max(0, record.vehicle_count)
-  const timing = liveState.northSouth
-  const cars = getDynamicCarsFromSignal(baseCars, timing, nowMs)
+  const nsCars = getDynamicCarsFromSignal(baseCars, northSouthTiming, nowMs)
+  const ewCars = getDynamicCarsFromSignal(baseCars, eastWestTiming, nowMs)
 
   const baseVehicleCounts = {
     bus: Math.max(0, record.vehicle_types?.bus ?? Math.round(baseCars * 0.1)),
@@ -222,34 +228,47 @@ function buildIntersections(liveState: LiveTrafficState, nowMs: number): Interse
     fireTruck: Math.max(0, record.vehicle_types?.fire_truck ?? Math.round(baseCars * 0.01)),
     ambulance: Math.max(0, record.vehicle_types?.ambulance ?? Math.round(baseCars * 0.02)),
   }
-  const vehicleCounts = getDynamicVehicleCounts(baseVehicleCounts, timing, nowMs)
+  const nsVehicleCounts = getDynamicVehicleCounts(baseVehicleCounts, northSouthTiming, nowMs)
+  const ewVehicleCounts = getDynamicVehicleCounts(baseVehicleCounts, eastWestTiming, nowMs)
+
+  const nsLanes: Intersection["lanes"] = {
+    north: northSouthSignal,
+    south: northSouthSignal,
+    east: "red",
+    west: "red",
+  }
+
+  const ewLanes: Intersection["lanes"] = {
+    north: "red",
+    south: "red",
+    east: eastWestSignal,
+    west: eastWestSignal,
+  }
 
   const nsIntersection: Intersection = {
     id: 1,
     name: "North-South",
     trafficColor: getTrafficColor(congestion),
     congestion,
-    cars,
-    vehicleCounts,
+    cars: nsCars,
+    vehicleCounts: nsVehicleCounts,
     status: getStatus(congestion),
     lastUpdate: getRelativeTime(record.timestamp),
-    lanes: signalLanes,
+    lanes: nsLanes,
+    signalTiming: northSouthTiming,
   }
-
-  // For the East-West intersection we invert the signal (EW active when NS is red)
-  const ewSignal: "red" | "yellow" | "green" = northSouthSignal === "red" ? "green" : "red"
-  const ewLanes: Intersection["lanes"] = { north: ewSignal, south: ewSignal, east: ewSignal, west: ewSignal }
 
   const ewIntersection: Intersection = {
     id: 2,
     name: "East-West",
     trafficColor: getTrafficColor(congestion),
     congestion,
-    cars: Math.max(0, Math.round(cars * 0.9)),
-    vehicleCounts,
+    cars: Math.max(0, Math.round(ewCars * 0.9)),
+    vehicleCounts: ewVehicleCounts,
     status: getStatus(congestion),
     lastUpdate: getRelativeTime(record.timestamp),
     lanes: ewLanes,
+    signalTiming: eastWestTiming,
   }
 
   return [nsIntersection, ewIntersection]
@@ -269,6 +288,7 @@ export default function IntersectionGrid() {
       status: "Normal" as const,
       lastUpdate: "2 min ago",
       lanes: { north: "green", south: "green", east: "red", west: "red" },
+      signalTiming: undefined,
     },
     {
       id: 2,
@@ -280,8 +300,11 @@ export default function IntersectionGrid() {
       status: "Moderate" as const,
       lastUpdate: "2 min ago",
       lanes: { north: "red", south: "red", east: "green", west: "green" },
+      signalTiming: undefined,
     },
   ])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const ticker = setInterval(() => {
@@ -305,9 +328,14 @@ export default function IntersectionGrid() {
     let isMounted = true
 
     const fetchDetectionRecords = async () => {
+      setLoading(true)
+      setError(null)
+
       try {
         const accessToken = getAccessToken()
         if (!accessToken) {
+          setLoading(false)
+          setError("Missing authentication token")
           return
         }
 
@@ -331,33 +359,34 @@ export default function IntersectionGrid() {
         })
 
         if (!response.ok) {
+          setError("Unable to load detection records")
+          setLoading(false)
           return
         }
 
         const records: DetectionRecord[] = await response.json()
         if (!Array.isArray(records) || records.length === 0) {
+          setError("No detection records available")
+          setLoading(false)
           return
         }
 
-        let northSouth: SignalTimingRecord | undefined
-
+        const signalTimings: Record<string, SignalTimingRecord | undefined> = {}
         if (signalResponse.ok) {
           const signalBody = await signalResponse.json()
+          const items = Array.isArray(signalBody) ? signalBody : []
 
-          if (Array.isArray(signalBody) && signalBody.length > 0) {
-            const northSouthRecords = signalBody.filter(
-              (record): record is SignalTimingRecord => record?.direction === "north_south",
-            )
-
-            if (northSouthRecords.length > 0) {
-              northSouth = northSouthRecords.sort(
-                (a, b) => getTimestampMs(b.timestamp) - getTimestampMs(a.timestamp),
-              )[0]
+          for (const item of items) {
+            if (!item || typeof item !== "object" || typeof (item as any).direction !== "string") {
+              continue
             }
-          } else if (signalBody && typeof signalBody === "object") {
-            const maybeNorthSouth = (signalBody as { north_south?: SignalTimingRecord }).north_south
-            if (maybeNorthSouth?.direction === "north_south") {
-              northSouth = maybeNorthSouth
+
+            const record = item as SignalTimingRecord
+            const key = normalizeDirection(record.direction)
+            const existing = signalTimings[key]
+
+            if (!existing || getTimestampMs(record.timestamp) > getTimestampMs(existing.timestamp)) {
+              signalTimings[key] = record
             }
           }
         }
@@ -374,18 +403,21 @@ export default function IntersectionGrid() {
           .sort((a, b) => getTimestampMs(b.timestamp) - getTimestampMs(a.timestamp))
           .slice(0, 1)
         if (latestOne.length === 0 || !isMounted) {
+          setLoading(false)
           return
         }
 
         const nextLiveState: LiveTrafficState = {
           detections: latestOne,
-          northSouth,
+          signalTimings,
         }
 
         setLiveState(nextLiveState)
         setIntersections(buildIntersections(nextLiveState, Date.now()))
-      } catch {
-        // Keep the previous UI state if the API is temporarily unavailable.
+        setLoading(false)
+      } catch (error) {
+        setError(error instanceof Error ? error.message : "Unable to load traffic data")
+        setLoading(false)
       }
     }
 
@@ -410,6 +442,7 @@ export default function IntersectionGrid() {
           status={intersection.status}
           lastUpdate={intersection.lastUpdate}
           lanes={intersection.lanes}
+          signalTiming={intersection.signalTiming}
         />
       ))}
     </div>

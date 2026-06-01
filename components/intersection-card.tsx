@@ -1,5 +1,11 @@
 import { MapPin } from "lucide-react"
 
+interface SignalTimingDisplay {
+  green_time: number
+  yellow_time: number
+  red_time: number
+}
+
 interface IntersectionCardProps {
   name: string
   trafficColor: "red" | "yellow" | "green"
@@ -13,6 +19,7 @@ interface IntersectionCardProps {
     east: "red" | "yellow" | "green"
     west: "red" | "yellow" | "green"
   }
+  signalTiming?: SignalTimingDisplay
 }
 
 export default function IntersectionCard({
@@ -23,6 +30,7 @@ export default function IntersectionCard({
   status,
   lastUpdate,
   lanes,
+  signalTiming,
 }: IntersectionCardProps) {
   const getStatusStyle = (status: string) => {
     const colors: Record<string, { bg: string; border: string; text: string }> = {
@@ -60,17 +68,20 @@ export default function IntersectionCard({
     return "#00ff41"
   }
 
-  const getCombinedNorthSouthSignal = (
-    north: "red" | "yellow" | "green",
-    south: "red" | "yellow" | "green",
-  ): "red" | "yellow" | "green" => {
-    if (north === "red" || south === "red") return "red"
-    if (north === "yellow" || south === "yellow") return "yellow"
+  const getCombinedSignal = (lanes: IntersectionCardProps["lanes"]): "red" | "yellow" | "green" => {
+    const axis = name === "East-West" ? [lanes.east, lanes.west] : [lanes.north, lanes.south]
+    if (axis.includes("red")) return "red"
+    if (axis.includes("yellow")) return "yellow"
     return "green"
   }
 
+  const signalPhase = getCombinedSignal(lanes)
+  const signalLabel = name === "East-West" ? "E/W" : "N/S"
+  const greenValue = signalTiming?.green_time ?? "--"
+  const yellowValue = signalTiming?.yellow_time ?? "--"
+  const redValue = signalTiming?.red_time ?? "--"
+
   const statusStyle = getStatusStyle(status)
-  const northSouthSignal = getCombinedNorthSouthSignal(lanes.north, lanes.south)
 
   return (
     <div className="glass-effect rounded-xl p-6 transition-all duration-300 group border-2 border-white/10 hover:border-accent/30">
@@ -142,21 +153,27 @@ export default function IntersectionCard({
           <div className="rounded-2xl bg-[#0f1115] border border-white/10 px-5 py-4 shadow-[0_8px_28px_rgba(0,0,0,0.35)]">
             <div className="flex flex-row items-center gap-3">
               {(["red", "yellow", "green"] as const).map((color) => {
-                const isActive = northSouthSignal === color
+                const isActive = signalPhase === color
+                const displayValue =
+                  color === "red" ? redValue : color === "yellow" ? yellowValue : greenValue
                 return (
                   <div
                     key={color}
-                    className="h-12 w-12 rounded-full border-4 border-[#2f333b] transition-all duration-300"
+                    className="relative flex h-12 w-12 items-center justify-center rounded-full border-4 border-[#2f333b] transition-all duration-300"
                     style={{
                       backgroundColor: getLaneColor(color),
                       opacity: isActive ? 1 : 0.25,
                       boxShadow: isActive ? `0 0 16px ${getLaneColor(color)}` : "none",
                     }}
-                  />
+                  >
+                    <span className="text-[10px] font-semibold" style={{ color: "#000", textShadow: "0 0 4px rgba(255,255,255,0.4)" }}>
+                      {displayValue}
+                    </span>
+                  </div>
                 )
               })}
             </div>
-            <span className="mt-2 block text-center text-xs font-semibold text-muted-foreground">N/S</span>
+            <span className="mt-2 block text-center text-xs font-semibold text-muted-foreground">{signalLabel}</span>
           </div>
         </div>
       </div>
