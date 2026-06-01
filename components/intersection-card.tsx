@@ -8,10 +8,10 @@ interface IntersectionCardProps {
   status: "Normal" | "Moderate" | "Heavy" | "Critical"
   lastUpdate: string
   lanes: {
-    north: number
-    south: number
-    east: number
-    west: number
+    north: "red" | "yellow" | "green"
+    south: "red" | "yellow" | "green"
+    east: "red" | "yellow" | "green"
+    west: "red" | "yellow" | "green"
   }
 }
 
@@ -47,10 +47,9 @@ export default function IntersectionCard({
     }
   }
 
-  const getLaneColor = (count: number): string => {
-    if (count > 30) return "#ff006e"
-    if (count > 20) return "#ffa500"
-    if (count > 10) return "#ffff00"
+  const getLaneColor = (color: "red" | "yellow" | "green"): string => {
+    if (color === "red") return "#ff006e"
+    if (color === "yellow") return "#ffff00"
     return "#00ff41"
   }
 
@@ -61,10 +60,20 @@ export default function IntersectionCard({
     return "#00ff41"
   }
 
+  const getCombinedNorthSouthSignal = (
+    north: "red" | "yellow" | "green",
+    south: "red" | "yellow" | "green",
+  ): "red" | "yellow" | "green" => {
+    if (north === "red" || south === "red") return "red"
+    if (north === "yellow" || south === "yellow") return "yellow"
+    return "green"
+  }
+
   const statusStyle = getStatusStyle(status)
+  const northSouthSignal = getCombinedNorthSouthSignal(lanes.north, lanes.south)
 
   return (
-    <div className="glass-effect rounded-xl p-6 hover:border-accent/50 transition-all duration-300 group border-2 border-white/10 hover:border-accent/30">
+    <div className="glass-effect rounded-xl p-6 transition-all duration-300 group border-2 border-white/10 hover:border-accent/30">
       <div className="flex items-start justify-between mb-5">
         <div className="flex-1">
           <h3 className="text-xl font-bold text-white mb-2">{name}</h3>
@@ -107,9 +116,9 @@ export default function IntersectionCard({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 mb-5">
+      <div className="grid grid-cols-1 gap-3 mb-5">
         <div
-          className="rounded-lg p-4 border border-white/10 hover:border-accent/30 transition-colors"
+          className="rounded-lg p-4 border border-white/10 hover:border-accent/30 transition-colors text-center"
           style={{ background: "rgba(255,255,255,0.05)" }}
         >
           <p className="text-xs text-muted-foreground font-semibold uppercase mb-2 tracking-wider">Cars Detected</p>
@@ -117,27 +126,37 @@ export default function IntersectionCard({
             {cars}
           </p>
         </div>
-        <div
+        {/* <div
           className="rounded-lg p-4 border border-white/10 hover:border-accent/30 transition-colors"
           style={{ background: "rgba(255,255,255,0.05)" }}
         >
           <p className="text-xs text-muted-foreground font-semibold uppercase mb-2 tracking-wider">Avg Speed</p>
           <p className="text-3xl font-bold text-accent">{Math.max(5, 45 - congestion / 2).toFixed(0)}km/h</p>
-        </div>
+        </div> */}
       </div>
 
       <div className="rounded-lg p-4 border border-white/10" style={{ background: "rgba(255,255,255,0.05)" }}>
-        <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wider">Lane Status</p>
-        <div className="grid grid-cols-4 gap-2">
-          {[lanes.north, lanes.south, lanes.east, lanes.west].map((count, idx) => (
-            <div key={idx} className="flex flex-col items-center gap-2">
-              <div
-                className="w-full h-10 rounded-md transition-opacity hover:opacity-100"
-                style={{ backgroundColor: getLaneColor(count), opacity: 0.9 }}
-              />
-              <span className="text-xs font-semibold text-muted-foreground">{["N", "S", "E", "W"][idx]}</span>
+        <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wider">Signal Status</p>
+        <div className="flex justify-center">
+          <div className="rounded-2xl bg-[#0f1115] border border-white/10 px-5 py-4 shadow-[0_8px_28px_rgba(0,0,0,0.35)]">
+            <div className="flex flex-row items-center gap-3">
+              {(["red", "yellow", "green"] as const).map((color) => {
+                const isActive = northSouthSignal === color
+                return (
+                  <div
+                    key={color}
+                    className="h-12 w-12 rounded-full border-4 border-[#2f333b] transition-all duration-300"
+                    style={{
+                      backgroundColor: getLaneColor(color),
+                      opacity: isActive ? 1 : 0.25,
+                      boxShadow: isActive ? `0 0 16px ${getLaneColor(color)}` : "none",
+                    }}
+                  />
+                )
+              })}
             </div>
-          ))}
+            <span className="mt-2 block text-center text-xs font-semibold text-muted-foreground">N/S</span>
+          </div>
         </div>
       </div>
     </div>

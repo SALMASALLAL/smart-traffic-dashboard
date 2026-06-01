@@ -10,9 +10,16 @@ type Intersection = {
   trafficColor: "red" | "yellow" | "green"
   congestion: number
   cars: number
+  vehicleCounts: {
+    bus: number
+    motorcycle: number
+    truck: number
+    fireTruck: number
+    ambulance: number
+  }
   status: "Normal" | "Moderate" | "Heavy" | "Critical"
   lastUpdate: string
-  lanes: { north: number; south: number; east: number; west: number }
+  lanes: { north: "red" | "yellow" | "green"; south: "red" | "yellow" | "green"; east: "red" | "yellow" | "green"; west: "red" | "yellow" | "green" }
 }
 
 type DetectionRecord = {
@@ -21,9 +28,31 @@ type DetectionRecord = {
   vehicle_count: number
   congestion_level: number
   timestamp: string
+  vehicle_types?: {
+    bus?: number
+    motorcycle?: number
+    truck?: number
+    fire_truck?: number
+    ambulance?: number
+  }
 }
 
-const API_URL = "https://judgingly-cicatrisant-milly.ngrok-free.dev/traffic/cognition-records?limit=20"
+type SignalTimingRecord = {
+  id: number
+  green_time: number
+  red_time: number
+  yellow_time: number
+  direction: "north_south" | "east_west"
+  timestamp: string
+}
+
+type LiveTrafficState = {
+  detections: DetectionRecord[]
+  northSouth?: SignalTimingRecord
+}
+
+const API_URL = "/api/traffic/cognition-records?limit=20"
+const SIGNAL_API_URL = "/api/traffic/signal-timings"
 
 function getCongestionFromLevel(level: number) {
   const normalized = Math.max(1, Math.min(4, level))
@@ -50,14 +79,95 @@ function getStatus(congestion: number): "Normal" | "Moderate" | "Heavy" | "Criti
   return "Normal"
 }
 
-function getLaneSplit(cars: number) {
-  const safeCars = Math.max(0, cars)
-  const north = Math.max(1, Math.round(safeCars * 0.3))
-  const south = Math.max(1, Math.round(safeCars * 0.25))
-  const east = Math.max(1, Math.round(safeCars * 0.3))
-  const west = Math.max(1, safeCars - north - south - east)
+function getSignalColorFromTiming(record: SignalTimingRecord, nowMs: number = Date.now()): "red" | "yellow" | "green" {
+  const green = Math.max(0, record.green_time)
+  const yellow = Math.max(0, record.yellow_time)
+  const red = Math.max(0, record.red_time)
+  const cycle = green + yellow + red
 
-  return { north, south, east, west }
+  if (cycle <= 0) {
+    return "red"
+  }
+
+  const startMs = getTimestampMs(record.timestamp)
+  if (startMs <= 0) {
+    if (red >= green && red >= yellow) return "red"
+    if (yellow >= green && yellow >= red) return "yellow"
+    return "green"
+  }
+
+  const elapsedSeconds = Math.floor((nowMs - startMs) / 1000)
+  const phase = ((elapsedSeconds % cycle) + cycle) % cycle
+
+  if (phase < green) {
+    return "green"
+  }
+
+  if (phase < green + yellow) {
+    return "yellow"
+  }
+
+  return "red"
+}
+
+function getDynamicTrafficFactorFromSignal(timing?: SignalTimingRecord, nowMs: number = Date.now()) {
+  if (!timing) {
+    return 1
+  }
+
+  const green = Math.max(0, timing.green_time)
+  const yellow = Math.max(0, timing.yellow_time)
+  const red = Math.max(0, timing.red_time)
+  const cycle = green + yellow + red
+
+  if (cycle <= 0) {
+    return 1
+  }
+
+  const startMs = getTimestampMs(timing.timestamp)
+  if (startMs <= 0) {
+    return 1
+  }
+
+  const elapsedSeconds = Math.floor((nowMs - startMs) / 1000)
+  const phase = ((elapsedSeconds % cycle) + cycle) % cycle
+
+  if (phase < green) {
+    const progress = green > 0 ? phase / green : 1
+    return 1.15 - 0.45 * progress
+  }
+
+  if (phase < green + yellow) {
+    const offset = phase - green
+    const progress = yellow > 0 ? offset / yellow : 1
+    return 0.75 + 0.15 * progress
+  }
+
+  const offset = phase - green - yellow
+  const progress = red > 0 ? offset / red : 1
+  return 0.9 + 0.45 * progress
+}
+
+function getDynamicCarsFromSignal(baseCars: number, timing?: SignalTimingRecord, nowMs: number = Date.now()) {
+  const safeBase = Math.max(0, baseCars)
+  const factor = getDynamicTrafficFactorFromSignal(timing, nowMs)
+
+  return Math.max(0, Math.round(safeBase * factor))
+}
+
+function getDynamicVehicleCounts(
+  baseCounts: { bus: number; motorcycle: number; truck: number; fireTruck: number; ambulance: number },
+  timing?: SignalTimingRecord,
+  nowMs: number = Date.now(),
+) {
+  const factor = getDynamicTrafficFactorFromSignal(timing, nowMs)
+  return {
+    bus: Math.max(0, Math.round(baseCounts.bus * factor)),
+    motorcycle: Math.max(0, Math.round(baseCounts.motorcycle * factor)),
+    truck: Math.max(0, Math.round(baseCounts.truck * factor)),
+    fireTruck: Math.max(0, Math.round(baseCounts.fireTruck * factor)),
+    ambulance: Math.max(0, Math.round(baseCounts.ambulance * factor)),
+  }
 }
 
 function getRelativeTime(timestamp: string) {
@@ -81,7 +191,52 @@ function getRelativeTime(timestamp: string) {
   return `${days}d ago`
 }
 
+function getTimestampMs(timestamp: string) {
+  const value = new Date(timestamp).getTime()
+  return Number.isNaN(value) ? 0 : value
+}
+
+function buildIntersections(liveState: LiveTrafficState, nowMs: number): Intersection[] {
+  const northSouthSignal = liveState.northSouth ? getSignalColorFromTiming(liveState.northSouth, nowMs) : "green"
+  const signalLanes: Intersection["lanes"] = {
+    north: northSouthSignal,
+    south: northSouthSignal,
+    east: "red",
+    west: "red",
+  }
+
+  return liveState.detections.slice(0, 1).map((record) => {
+    const congestion = getCongestionFromLevel(record.congestion_level)
+    const baseCars = Math.max(0, record.vehicle_count)
+    const timing = liveState.northSouth
+    const cars = getDynamicCarsFromSignal(baseCars, timing, nowMs)
+
+    const baseVehicleCounts = {
+      bus: Math.max(0, record.vehicle_types?.bus ?? Math.round(baseCars * 0.1)),
+      motorcycle: Math.max(0, record.vehicle_types?.motorcycle ?? Math.round(baseCars * 0.35)),
+      truck: Math.max(0, record.vehicle_types?.truck ?? Math.round(baseCars * 0.12)),
+      fireTruck: Math.max(0, record.vehicle_types?.fire_truck ?? Math.round(baseCars * 0.01)),
+      ambulance: Math.max(0, record.vehicle_types?.ambulance ?? Math.round(baseCars * 0.02)),
+    }
+    const vehicleCounts = getDynamicVehicleCounts(baseVehicleCounts, timing, nowMs)
+
+    return {
+      id: 1,
+      name: "North-South",
+      trafficColor: getTrafficColor(congestion),
+      congestion,
+      cars,
+      vehicleCounts,
+      status: getStatus(congestion),
+      lastUpdate: getRelativeTime(record.timestamp),
+      lanes: signalLanes,
+    }
+  })
+}
+
 export default function IntersectionGrid() {
+  const [nowMs, setNowMs] = useState(Date.now())
+  const [liveState, setLiveState] = useState<LiveTrafficState | null>(null)
   const [intersections, setIntersections] = useState<Intersection[]>([
     {
       id: 1,
@@ -89,21 +244,30 @@ export default function IntersectionGrid() {
       trafficColor: "green" as const,
       congestion: 25,
       cars: 12,
+      vehicleCounts: { bus: 2, motorcycle: 4, truck: 1, fireTruck: 0, ambulance: 0 },
       status: "Normal" as const,
       lastUpdate: "2 min ago",
-      lanes: { north: 8, south: 4, east: 12, west: 6 },
-    },
-    {
-      id: 2,
-      name: "East-West",
-      trafficColor: "red" as const,
-      congestion: 85,
-      cars: 48,
-      status: "Critical" as const,
-      lastUpdate: "1 min ago",
-      lanes: { north: 35, south: 28, east: 42, west: 31 },
+      lanes: { north: "green", south: "green", east: "red", west: "red" },
     },
   ])
+
+  useEffect(() => {
+    const ticker = setInterval(() => {
+      setNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      clearInterval(ticker)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!liveState) {
+      return
+    }
+
+    setIntersections(buildIntersections(liveState, nowMs))
+  }, [liveState, nowMs])
 
   useEffect(() => {
     let isMounted = true
@@ -111,16 +275,24 @@ export default function IntersectionGrid() {
     const fetchDetectionRecords = async () => {
       try {
         const accessToken = getAccessToken()
+        if (!accessToken) {
+          return
+        }
+
         const tokenType = getTokenType() ?? "bearer"
         const headers: HeadersInit = {
           Accept: "application/json",
         }
 
-        if (accessToken) {
-          headers.Authorization = `${tokenType} ${accessToken}`
-        }
+        headers.Authorization = `${tokenType} ${accessToken}`
 
-        const response = await fetch(API_URL, {
+        const response = await fetch(`${API_URL}&_t=${Date.now()}`, {
+          method: "GET",
+          headers,
+          cache: "no-store",
+        })
+
+        const signalResponse = await fetch(`${SIGNAL_API_URL}?_t=${Date.now()}`, {
           method: "GET",
           headers,
           cache: "no-store",
@@ -135,43 +307,51 @@ export default function IntersectionGrid() {
           return
         }
 
+        let northSouth: SignalTimingRecord | undefined
+
+        if (signalResponse.ok) {
+          const signalBody = await signalResponse.json()
+
+          if (Array.isArray(signalBody) && signalBody.length > 0) {
+            const northSouthRecords = signalBody.filter(
+              (record): record is SignalTimingRecord => record?.direction === "north_south",
+            )
+
+            if (northSouthRecords.length > 0) {
+              northSouth = northSouthRecords.sort(
+                (a, b) => getTimestampMs(b.timestamp) - getTimestampMs(a.timestamp),
+              )[0]
+            }
+          } else if (signalBody && typeof signalBody === "object") {
+            const maybeNorthSouth = (signalBody as { north_south?: SignalTimingRecord }).north_south
+            if (maybeNorthSouth?.direction === "north_south") {
+              northSouth = maybeNorthSouth
+            }
+          }
+        }
+
         const latestByCamera = new Map<number, DetectionRecord>()
         for (const record of records) {
-          if (!latestByCamera.has(record.camera_id)) {
+          const existing = latestByCamera.get(record.camera_id)
+          if (!existing || getTimestampMs(record.timestamp) > getTimestampMs(existing.timestamp)) {
             latestByCamera.set(record.camera_id, record)
           }
         }
 
-        const latestTwo = [...latestByCamera.values()].slice(0, 2)
-        if (latestTwo.length === 0 || !isMounted) {
+        const latestOne = [...latestByCamera.values()]
+          .sort((a, b) => getTimestampMs(b.timestamp) - getTimestampMs(a.timestamp))
+          .slice(0, 1)
+        if (latestOne.length === 0 || !isMounted) {
           return
         }
 
-        const nextIntersections: Intersection[] = latestTwo.map((record, index) => {
-          const congestion = getCongestionFromLevel(record.congestion_level)
-          const cars = Math.max(0, record.vehicle_count)
-
-          return {
-            id: index + 1,
-            name: `Intersection ${index === 0 ? "A" : "B"}`,
-            trafficColor: getTrafficColor(congestion),
-            congestion,
-            cars,
-            status: getStatus(congestion),
-            lastUpdate: getRelativeTime(record.timestamp),
-            lanes: getLaneSplit(cars),
-          }
-        })
-
-        if (nextIntersections.length === 1) {
-          nextIntersections.push({
-            ...nextIntersections[0],
-            id: 2,
-            name: "Intersection B",
-          })
+        const nextLiveState: LiveTrafficState = {
+          detections: latestOne,
+          northSouth,
         }
 
-        setIntersections(nextIntersections)
+        setLiveState(nextLiveState)
+        setIntersections(buildIntersections(nextLiveState, Date.now()))
       } catch {
         // Keep the previous UI state if the API is temporarily unavailable.
       }
@@ -187,7 +367,7 @@ export default function IntersectionGrid() {
   }, [])
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4 w-full">
       {intersections.map((intersection) => (
         <IntersectionCard
           key={intersection.id}

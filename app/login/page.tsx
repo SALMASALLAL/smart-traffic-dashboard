@@ -69,7 +69,7 @@ export default function LoginPage() {
         body.set("client_secret", clientSecret)
       }
 
-      const response = await fetch("https://judgingly-cicatrisant-milly.ngrok-free.dev/login", {
+      const response = await fetch("/api/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
